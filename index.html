@@ -135,6 +135,19 @@ button{font-family:'Noto Sans TC',sans-serif;cursor:pointer;font-size:13px}
 </head>
 <body>
 
+<div id="lock-screen" style="display:none;position:fixed;inset:0;background:#f7f6f3;z-index:9999;display:flex;align-items:center;justify-content:center">
+  <div style="background:#fff;border:1px solid #e2e0d8;border-radius:16px;padding:40px 48px;width:340px;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,0.08)">
+    <div style="font-size:32px;margin-bottom:16px">🔐</div>
+    <h2 style="font-size:18px;font-weight:600;color:#1a1917;margin-bottom:6px">BW 專案管理系統</h2>
+    <p style="font-size:13px;color:#a8a7a2;margin-bottom:24px">請輸入通關密碼以繼續</p>
+    <input id="pw-input" type="password" placeholder="輸入密碼" onkeydown="if(event.key==='Enter')checkPw()"
+      style="width:100%;padding:10px 14px;border:1.5px solid #e2e0d8;border-radius:8px;font-size:14px;font-family:'Noto Sans TC',sans-serif;outline:none;margin-bottom:10px;text-align:center;letter-spacing:2px">
+    <div id="pw-error" style="font-size:12px;color:#dc2626;height:16px;margin-bottom:8px"></div>
+    <button onclick="checkPw()" style="width:100%;padding:10px;background:#1a1917;color:#fff;border:none;border-radius:8px;font-size:14px;font-family:'Noto Sans TC',sans-serif;font-weight:500;cursor:pointer">進入系統</button>
+  </div>
+</div>
+
+<div id="app-wrap" style="display:none">
 <div class="app">
 <aside class="sidebar">
   <div class="sidebar-logo">
@@ -172,6 +185,7 @@ button{font-family:'Noto Sans TC',sans-serif;cursor:pointer;font-size:13px}
     <div class="topbar-actions" style="display:flex;align-items:center;gap:10px">
       <span id="sync-status"><span style="color:var(--text3);font-size:11px">🔄 連線中…</span></span>
       <button class="btn btn-sm" onclick="manualSync()" title="從 Google Sheets 重新載入">↻ 同步</button>
+      <button class="btn btn-sm" onclick="openModal('import')">📥 匯入任務</button>
       <button class="btn btn-sm" onclick="openModal('project')">+ 新增專案</button>
     </div>
   </div>
@@ -215,6 +229,7 @@ button{font-family:'Noto Sans TC',sans-serif;cursor:pointer;font-size:13px}
   </div>
 </div>
 </div>
+</div><!-- end app-wrap -->
 
 <div class="modal-overlay" id="modal-overlay">
   <div class="modal" id="modal-content"></div>
@@ -308,61 +323,93 @@ const DEFAULT_DATA = {
   ]
 };
 
-// ── 雲端儲存 ──────────────────────────────────────────
+// ── 雲端儲存（JSONP 模式，繞過 CORS）──────────────────
 function loadLocalCache(){
   try{const s=localStorage.getItem('bw_pm_v1');return s?JSON.parse(s):null;}catch(e){return null;}
 }
 function saveLocalCache(d){
   try{localStorage.setItem('bw_pm_v1',JSON.stringify(d));}catch(e){}
 }
+
+// JSONP GET
+function jsonpGet(url){
+  return new Promise((resolve,reject)=>{
+    const cbName='_cb_'+Date.now()+'_'+Math.random().toString(36).slice(2);
+    const script=document.createElement('script');
+    const timer=setTimeout(()=>{cleanup();reject(new Error('timeout'));},10000);
+    function cleanup(){clearTimeout(timer);delete window[cbName];if(script.parentNode)script.parentNode.removeChild(script);}
+    window[cbName]=function(data){cleanup();resolve(data);};
+    script.src=url+(url.includes('?')?'&':'?')+'callback='+cbName;
+    script.onerror=()=>{cleanup();reject(new Error('script error'));};
+    document.head.appendChild(script);
+  });
+}
+
+// JSONP POST（用 GET 帶 encoded body）
+function jsonpPost(url,payload){
+  return new Promise((resolve,reject)=>{
+    const cbName='_cb_'+Date.now()+'_'+Math.random().toString(36).slice(2);
+    const script=document.createElement('script');
+    const timer=setTimeout(()=>{cleanup();reject(new Error('timeout'));},15000);
+    function cleanup(){clearTimeout(timer);delete window[cbName];if(script.parentNode)script.parentNode.removeChild(script);}
+    window[cbName]=function(data){cleanup();resolve(data);};
+    const encoded=encodeURIComponent(JSON.stringify(payload));
+    script.src=url+'?method=post&body='+encoded+'&callback='+cbName;
+    script.onerror=()=>{cleanup();reject(new Error('script error'));};
+    document.head.appendChild(script);
+  });
+}
+
 async function loadFromCloud(){
   showSyncStatus('loading');
   try{
-    const r=await fetch(API_URL+'?action=getData');
-    const json=await r.json();
+    const json=await jsonpGet(API_URL+'?action=getData');
     if(json.projects&&json.projects.length>0){
       data.projects=json.projects;
       data.tasks=json.tasks||[];
+      sanitizeDates(data);
       data.projects=data.projects.map(p=>({...p,stage:p.stage==='前置規劃'?'執行中':p.stage}));
       saveLocalCache(data);
       showSyncStatus('ok');
       return true;
     }else{
-      // 雲端是空的，把預設資料推上去
+      // 雲端空的，推預設資料上去
       await saveToCloud(data);
       showSyncStatus('ok');
       return true;
     }
   }catch(e){
+    console.warn('Cloud load failed:',e);
     showSyncStatus('offline');
     return false;
   }
 }
+
+let saveQueue=null;let saveTimer=null;
 async function saveData(d){
   saveLocalCache(d);
-  if(isSyncing)return;
-  isSyncing=true;
-  showSyncStatus('saving');
-  try{
-    await fetch(API_URL,{
-      method:'POST',
-      headers:{'Content-Type':'text/plain'},
-      body:JSON.stringify({action:'saveData',data:d})
-    });
-    showSyncStatus('ok');
-  }catch(e){
-    showSyncStatus('offline');
-  }finally{isSyncing=false;}
+  // debounce：500ms 內多次儲存只發一次
+  saveQueue=d;
+  if(saveTimer)clearTimeout(saveTimer);
+  saveTimer=setTimeout(async()=>{
+    if(!saveQueue)return;
+    const toSave=sanitizeDates(JSON.parse(JSON.stringify(saveQueue)));saveQueue=null;
+    if(isSyncing)return;
+    isSyncing=true;
+    showSyncStatus('saving');
+    try{
+      await saveToCloud(toSave);
+      showSyncStatus('ok');
+    }catch(e){
+      showSyncStatus('offline');
+    }finally{isSyncing=false;}
+  },500);
 }
+
 async function saveToCloud(d){
-  try{
-    await fetch(API_URL,{
-      method:'POST',
-      headers:{'Content-Type':'text/plain'},
-      body:JSON.stringify({action:'saveData',data:d})
-    });
-  }catch(e){}
+  await jsonpPost(API_URL,{action:'saveData',data:d});
 }
+
 function showSyncStatus(state){
   const el=document.getElementById('sync-status');
   if(!el)return;
@@ -379,6 +426,7 @@ function showSyncStatus(state){
 
 // 初始化：先用快取顯示，背景同步雲端
 let data=loadLocalCache()||JSON.parse(JSON.stringify(DEFAULT_DATA));
+sanitizeDates(data);
 data.projects=data.projects.map(p=>({...p,stage:p.stage==='前置規劃'?'執行中':p.stage}));
 
 function getProject(id){return data.projects.find(p=>p.id===id);}
@@ -397,9 +445,48 @@ function daysUntil(dateStr){
   now.setHours(0,0,0,0);d.setHours(0,0,0,0);
   return Math.round((d-now)/(1000*60*60*24));
 }
-function formatDate(s){if(!s)return'';const[y,m,dd]=s.split('-');return`${parseInt(m)}/${parseInt(dd)}`;}
-function formatDateFull(s){if(!s)return'';const[y,m,dd]=s.split('-');return`${y}/${m}/${dd}`;}
+function formatDate(s){
+  if(!s)return'';
+  const clean=toDateStr(s);
+  if(!clean||!clean.includes('-'))return s;
+  const[y,m,dd]=clean.split('-');
+  return`${parseInt(m)}/${parseInt(dd)}`;
+}
+function formatDateFull(s){
+  if(!s)return'';
+  const clean=toDateStr(s);
+  if(!clean||!clean.includes('-'))return s;
+  const[y,m,dd]=clean.split('-');
+  return`${y}/${m}/${dd}`;
+}
 function uid(){return 'id_'+Date.now()+'_'+Math.random().toString(36).slice(2);}
+
+// 把任何日期格式統一轉成 YYYY-MM-DD
+function toDateStr(val){
+  if(!val)return'';
+  if(typeof val==='string'){
+    // 已經是 YYYY-MM-DD
+    if(/^\d{4}-\d{2}-\d{2}$/.test(val))return val;
+    // Date 物件的 toString 格式
+    const d=new Date(val);
+    if(!isNaN(d)){
+      return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    }
+  }
+  return String(val);
+}
+// 清理整個 data 物件的日期欄位
+function sanitizeDates(d){
+  d.projects=d.projects.map(p=>({...p,
+    start:toDateStr(p.start),
+    end:toDateStr(p.end)
+  }));
+  d.tasks=d.tasks.map(t=>({...t,
+    date:toDateStr(t.date),
+    originalDate:t.originalDate?toDateStr(t.originalDate):''
+  }));
+  return d;
+}
 
 function getProgressColor(pct){
   if(pct>=80)return'success';
@@ -731,16 +818,29 @@ function renderGantt(){
     </div>
     ${legend}`;
 
-  setTimeout(()=>{
+  function initGanttScroll(){
     const gs=document.getElementById('gantt-scroll');
     if(!gs)return;
     const todayPx=dayLeft(today);
-    gs.scrollLeft=Math.max(0, todayPx - (gs.clientWidth - LABEL_W)/2);
+    const viewable=gs.clientWidth - LABEL_W;
+    gs.scrollLeft=Math.max(0, todayPx - viewable/2);
+    // 防止重複綁定
+    if(gs._dragBound)return;
+    gs._dragBound=true;
     let isDragging=false,startX=0,startScroll=0;
-    gs.addEventListener('mousedown',e=>{if(e.target.closest('[onclick]'))return;isDragging=true;startX=e.pageX;startScroll=gs.scrollLeft;gs.style.cursor='grabbing';});
-    window.addEventListener('mousemove',e=>{if(!isDragging)return;gs.scrollLeft=startScroll-(e.pageX-startX);});
+    gs.addEventListener('mousedown',e=>{if(e.target.closest('[onclick]'))return;isDragging=true;startX=e.pageX;startScroll=gs.scrollLeft;gs.style.cursor='grabbing';e.preventDefault();});
+    window.addEventListener('mousemove',e=>{if(!isDragging)return;const dx=e.pageX-startX;gs.scrollLeft=startScroll-dx;});
     window.addEventListener('mouseup',()=>{isDragging=false;if(gs)gs.style.cursor='grab';});
-  },50);
+    // 觸控支援
+    gs.addEventListener('touchstart',e=>{startX=e.touches[0].pageX;startScroll=gs.scrollLeft;},{passive:true});
+    gs.addEventListener('touchmove',e=>{gs.scrollLeft=startScroll-(e.touches[0].pageX-startX);},{passive:true});
+  }
+  setTimeout(initGanttScroll, 80);
+  // 若視窗 resize 也重新置中
+  window.addEventListener('resize',()=>{
+    const gs=document.getElementById('gantt-scroll');
+    if(gs){const todayPx=dayLeft(today);gs.scrollLeft=Math.max(0,todayPx-(gs.clientWidth-LABEL_W)/2);}
+  });
 }
 
 function getThisWeekRange(){
@@ -806,6 +906,10 @@ function renderTasks(){
   const{mon,fri}=getThisWeekRange();
   const weekLabel=`本週 ${mon.getMonth()+1}/${mon.getDate()} – ${fri.getMonth()+1}/${fri.getDate()}`;
 
+  const doneTasks=tasks.filter(t=>t._autoStatus==='done');
+  const activeTasks=tasks.filter(t=>t._autoStatus!=='done');
+  const doneCollapsed=localStorage.getItem('bw_done_collapsed')!=='false';
+
   document.getElementById('tasks-table').innerHTML=`
     <div style="padding:10px 16px;background:var(--blue-bg);border-bottom:1px solid var(--border);font-size:12px;color:var(--blue-text);display:flex;align-items:center;justify-content:space-between">
       <div style="display:flex;align-items:center;gap:6px">
@@ -827,7 +931,7 @@ function renderTasks(){
         <th style="width:80px">完成</th>
         <th style="width:40px"></th>
       </tr></thead>
-      <tbody>${tasks.map(t=>{
+      <tbody>${activeTasks.map(t=>{
         const p=getProject(t.pid);
         const as=t._autoStatus;
         const tp=getTimeProgress(t.date);
@@ -852,12 +956,48 @@ function renderTasks(){
           <td><button onclick="openModal('task','${t.id}')" style="padding:3px 7px;border:1px solid var(--border);border-radius:6px;font-size:11px;background:var(--surface);color:var(--text2);cursor:pointer">編輯</button></td>
         </tr>`;
       }).join('')}</tbody>
-    </table>`;
+    </table>
+    <div style="border-top:2px solid var(--border2)">
+      <button onclick="toggleDone()" style="width:100%;padding:10px 16px;background:var(--surface2);border:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--text2);font-weight:500">
+        <span>✅ 已完成任務（${doneTasks.length} 筆）</span>
+        <span style="font-size:14px">${doneCollapsed?'▶ 展開':'▼ 收起'}</span>
+      </button>
+      <div style="display:${doneCollapsed?'none':'block'}">
+        <table style="width:100%;border-collapse:collapse;table-layout:fixed">
+          <tbody>
+            ${doneTasks.map(t=>{
+              const p=getProject(t.pid);
+              return `<tr style="opacity:0.5">
+                <td style="width:32px;text-align:center;padding:8px 14px"><span class="overdue-dot" style="background:var(--green)"></span></td>
+                <td style="width:220px;padding:8px 14px;font-size:13px;text-decoration:line-through;color:var(--text3)">${t.name}</td>
+                <td style="width:160px;padding:8px 14px;font-size:12px;color:var(--text3)">${p?p.name:''}</td>
+                <td style="width:110px;padding:8px 14px;font-family:'DM Mono',monospace;font-size:12px;color:var(--text3)">${formatDateFull(t.date)}</td>
+                <td style="width:120px;padding:8px 14px;font-size:12px;color:var(--text3)">—</td>
+                <td style="width:100px;padding:8px 14px"><span class="badge badge-green">已完成</span></td>
+                <td style="width:60px;padding:8px 14px;font-size:12px">—</td>
+                <td style="width:80px;padding:8px 14px">
+                  <select onchange="updateTaskStatus('${t.id}',this.value)" style="padding:3px 6px;border:1px solid var(--border);border-radius:6px;font-size:11px;background:var(--surface);color:var(--text)">
+                    <option value="pending">待執行</option>
+                    <option value="done" selected>已完成</option>
+                  </select>
+                </td>
+                <td style="width:40px;padding:8px 14px"><button onclick="openModal('task','${t.id}')" style="padding:3px 7px;border:1px solid var(--border);border-radius:6px;font-size:11px;background:var(--surface);color:var(--text2);cursor:pointer">編輯</button></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
 }
 
 function updateTaskStatus(tid,status){
   const t=data.tasks.find(x=>x.id===tid);
   if(t){t.status=status;saveData(data);renderAll();}
+}
+function toggleDone(){
+  const current=localStorage.getItem('bw_done_collapsed')!=='false';
+  localStorage.setItem('bw_done_collapsed',current?'false':'true');
+  renderTasks();
 }
 
 function renderAll(){
@@ -930,6 +1070,28 @@ function openModal(type,data_){
         <button class="btn btn-primary" onclick="saveTask('${t?t.id:''}')">${t?'儲存變更':'新增任務'}</button>
       </div>`;
   }
+  }else if(type==='import'){
+    content.innerHTML=`
+      <h3>📥 匯入任務時程</h3>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:16px">選擇所屬專案後，貼上任務清單。每行一筆，格式：<br>
+      <code style="background:var(--surface2);padding:2px 6px;border-radius:4px;font-size:11px">任務名稱, YYYY-MM-DD, 優先順序(high/mid/low)</code></p>
+      <div class="form-group">
+        <label>所屬專案</label>
+        <select id="m-import-pid" style="width:100%;padding:8px 11px;border:1px solid var(--border);border-radius:8px;font-size:13px">
+          ${data.projects.map(p=>`<option value="${p.id}">${p.name}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>任務清單（每行一筆）</label>
+        <textarea id="m-import-text" rows="12" placeholder="腳本一版, 2026-06-11, high&#10;腳本一版客戶回覆, 2026-06-15, mid&#10;腳本二版, 2026-06-18, high&#10;錄影, 2026-07-14, high&#10;上片, 2026-07-30, high" style="width:100%;padding:8px 11px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:'DM Mono',monospace;resize:vertical;line-height:1.8"></textarea>
+      </div>
+      <div id="import-preview" style="margin-bottom:8px"></div>
+      <div class="modal-actions">
+        <button class="btn" onclick="closeModal()">取消</button>
+        <button class="btn" onclick="previewImport()">預覽</button>
+        <button class="btn btn-primary" onclick="confirmImport()">匯入</button>
+      </div>`;
+  }
   overlay.classList.add('open');
 }
 
@@ -944,11 +1106,13 @@ function saveProject(id){
   const start=document.getElementById('m-start').value;
   const end=document.getElementById('m-end').value;
   if(!name){alert('請輸入專案名稱');return;}
+  const cleanStart=toDateStr(start);
+  const cleanEnd=toDateStr(end);
   if(id){
     const p=data.projects.find(x=>x.id===id);
-    if(p)Object.assign(p,{name,client,type,stage,start,end});
+    if(p)Object.assign(p,{name,client,type,stage,start:cleanStart,end:cleanEnd});
   }else{
-    data.projects.push({id:uid(),name,client,type,stage,start,end});
+    data.projects.push({id:uid(),name,client,type,stage,start:cleanStart,end:cleanEnd});
   }
   saveData(data);renderAll();closeModal();
 }
@@ -960,14 +1124,15 @@ function saveTask(id){
   const priority=document.getElementById('m-tpriority').value;
   const status=document.getElementById('m-tstatus')?document.getElementById('m-tstatus').value:'pending';
   if(!name){alert('請輸入任務名稱');return;}
+  const cleanDate=toDateStr(date);
   if(id){
     const t=data.tasks.find(x=>x.id===id);
     if(t){
-      if(date&&date!==t.date&&!t.originalDate){t.originalDate=t.date;}
-      Object.assign(t,{name,pid,date,priority,status});
+      if(cleanDate&&cleanDate!==t.date&&!t.originalDate){t.originalDate=t.date;}
+      Object.assign(t,{name,pid,date:cleanDate,priority,status});
     }
   }else{
-    data.tasks.push({id:uid(),pid,name,type:'其他',date,status:'pending',priority});
+    data.tasks.push({id:uid(),pid,name,type:'其他',date:cleanDate,status:'pending',priority});
   }
   saveData(data);renderAll();closeModal();
 }
@@ -976,6 +1141,43 @@ function deleteTask(id){
   if(!confirm('確定要刪除這個任務嗎？'))return;
   data.tasks=data.tasks.filter(t=>t.id!==id);
   saveData(data);renderAll();closeModal();
+}
+
+function parseImportText(){
+  const pid=document.getElementById('m-import-pid').value;
+  const text=document.getElementById('m-import-text').value.trim();
+  const lines=text.split('\n').filter(l=>l.trim());
+  const tasks=[];const errors=[];
+  lines.forEach((line,i)=>{
+    const parts=line.split(',').map(s=>s.trim());
+    if(parts.length<2){errors.push(`第${i+1}行格式錯誤：${line}`);return;}
+    const name=parts[0];
+    const date=toDateStr(parts[1]);
+    const priority=parts[2]&&['high','mid','low'].includes(parts[2])?parts[2]:'mid';
+    if(!name||!date){errors.push(`第${i+1}行資料不完整`);return;}
+    tasks.push({id:uid(),pid,name,type:'其他',date,status:'pending',priority});
+  });
+  return{tasks,errors};
+}
+function previewImport(){
+  const{tasks,errors}=parseImportText();
+  const el=document.getElementById('import-preview');
+  if(errors.length){
+    el.innerHTML=`<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px;font-size:12px;color:#991b1b">${errors.join('<br>')}</div>`;
+    return;
+  }
+  el.innerHTML=`<div style="background:var(--green-bg);border:1px solid #bbf7d0;border-radius:8px;padding:10px;font-size:12px;color:var(--green-text)">
+    ✅ 預覽正確，將匯入 <strong>${tasks.length}</strong> 筆任務：<br>
+    ${tasks.map(t=>`• ${t.name}（${t.date}）${t.priority==='high'?'🔴':t.priority==='mid'?'🟡':'⚪'}`).join('<br>')}
+  </div>`;
+}
+function confirmImport(){
+  const{tasks,errors}=parseImportText();
+  if(errors.length){previewImport();return;}
+  if(!tasks.length){alert('沒有可匯入的任務');return;}
+  data.tasks=[...data.tasks,...tasks];
+  saveData(data);renderAll();closeModal();
+  alert(`✅ 成功匯入 ${tasks.length} 筆任務！`);
 }
 
 function deleteProject(id){
@@ -990,9 +1192,34 @@ function openProjectDetail(pid){
   openModal('project',p);
 }
 
-renderAll();
-// 背景拉雲端最新資料
-loadFromCloud().then(ok=>{if(ok)renderAll();});
+// ── 密碼鎖 ──────────────────────────────────────────────
+function checkPw(){
+  const val=document.getElementById('pw-input').value;
+  if(val==='mignon'){
+    localStorage.setItem('bw_auth','1');
+    document.getElementById('lock-screen').style.display='none';
+    document.getElementById('app-wrap').style.display='block';
+    renderAll();
+    loadFromCloud().then(ok=>{if(ok)renderAll();});
+  }else{
+    document.getElementById('pw-error').textContent='密碼錯誤，請再試一次';
+    document.getElementById('pw-input').value='';
+    document.getElementById('pw-input').focus();
+  }
+}
+function initAuth(){
+  if(localStorage.getItem('bw_auth')==='1'){
+    document.getElementById('lock-screen').style.display='none';
+    document.getElementById('app-wrap').style.display='block';
+    renderAll();
+    loadFromCloud().then(ok=>{if(ok)renderAll();});
+  }else{
+    document.getElementById('lock-screen').style.display='flex';
+    document.getElementById('app-wrap').style.display='none';
+    setTimeout(()=>document.getElementById('pw-input').focus(),100);
+  }
+}
+initAuth();
 </script>
 </body>
 </html>
