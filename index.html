@@ -136,6 +136,7 @@ button{font-family:'Noto Sans TC',sans-serif;cursor:pointer;font-size:13px}
 #app-wrap{display:none}
 #app-wrap.visible{display:block}
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
 <body>
 
@@ -829,11 +830,19 @@ function renderGantt(){
     gs.addEventListener('touchstart',e=>{startX=e.touches[0].pageX;startScroll=gs.scrollLeft;},{passive:true});
     gs.addEventListener('touchmove',e=>{gs.scrollLeft=startScroll-(e.touches[0].pageX-startX);},{passive:true});
   }
-  setTimeout(initGanttScroll, 80);
-  // 若視窗 resize 也重新置中
+  // 多次嘗試確保捲動到位（等待 DOM 渲染完畢）
+  [80,200,500].forEach(ms=>setTimeout(()=>{
+    const gs=document.getElementById('gantt-scroll');
+    if(gs&&!gs._centered){
+      const todayPx=dayLeft(today);
+      const viewable=gs.clientWidth-LABEL_W;
+      if(viewable>0){gs.scrollLeft=Math.max(0,todayPx-viewable/2);gs._centered=true;}
+    }
+    initGanttScroll();
+  },ms));
   window.addEventListener('resize',()=>{
     const gs=document.getElementById('gantt-scroll');
-    if(gs){const todayPx=dayLeft(today);gs.scrollLeft=Math.max(0,todayPx-(gs.clientWidth-LABEL_W)/2);}
+    if(gs){gs._centered=false;const todayPx=dayLeft(today);gs.scrollLeft=Math.max(0,todayPx-(gs.clientWidth-LABEL_W)/2);}
   });
 }
 
@@ -921,8 +930,7 @@ function renderTasks(){
         <th style="width:110px">截止日期</th>
         <th style="width:120px">時間進度</th>
         <th style="width:100px">狀態</th>
-        <th style="width:60px">優先</th>
-        <th style="width:80px">完成</th>
+        <th style="width:90px">完成</th>
         <th style="width:40px"></th>
       </tr></thead>
       <tbody>${activeTasks.map(t=>{
@@ -968,8 +976,7 @@ function renderTasks(){
                 <td style="width:110px;padding:8px 14px;font-family:'DM Mono',monospace;font-size:12px;color:var(--text3)">${formatDateFull(t.date)}</td>
                 <td style="width:120px;padding:8px 14px;font-size:12px;color:var(--text3)">—</td>
                 <td style="width:100px;padding:8px 14px"><span class="badge badge-green">已完成</span></td>
-                <td style="width:60px;padding:8px 14px;font-size:12px">—</td>
-                <td style="width:80px;padding:8px 14px">
+                <td style="width:90px;padding:8px 14px">
                   <select onchange="updateTaskStatus('${t.id}',this.value)" style="padding:3px 6px;border:1px solid var(--border);border-radius:6px;font-size:11px;background:var(--surface);color:var(--text)">
                     <option value="pending">待執行</option>
                     <option value="done" selected>已完成</option>
@@ -1013,6 +1020,13 @@ function showView(view){
   document.getElementById('nav-'+view).classList.add('active');
   const titles={overview:'專案總覽',kanban:'看板',gantt:'甘特圖',tasks:'任務列表'};
   document.getElementById('topbar-title').textContent=titles[view]||view;
+  if(view==='gantt'){
+    // 切換到甘特圖時重新置中今天
+    [80,250].forEach(ms=>setTimeout(()=>{
+      const gs=document.getElementById('gantt-scroll');
+      if(gs){gs._centered=false;renderGantt();}
+    },ms));
+  }
 }
 
 function openModal(type,data_){
@@ -1042,14 +1056,11 @@ function openModal(type,data_){
       <h3>${t?'編輯任務':'新增任務'}</h3>
       <div class="form-group"><label>任務名稱</label><input type="text" id="m-tname" value="${t?t.name:''}" placeholder="例：腳本一版"></div>
       <div class="form-group"><label>所屬專案</label><select id="m-tpid">${data.projects.map(p=>`<option value="${p.id}" ${t&&t.pid===p.id?'selected':''}>${p.name}</option>`).join('')}</select></div>
-      <div class="form-row">
-        <div class="form-group">
+      <div class="form-group">
           <label>截止日期${t&&t.originalDate&&t.originalDate!==t.date?`<span style="font-size:10px;color:var(--amber);margin-left:6px">已改期（原：${formatDateFull(t.originalDate)}）</span>`:''}
           </label>
           <input type="date" id="m-tdate" value="${t?t.date:''}">
           ${t&&t.originalDate&&t.originalDate!==t.date?`<div style="font-size:11px;color:var(--text3);margin-top:3px">原訂日期：${formatDateFull(t.originalDate)}</div>`:''}
-        </div>
-        <div class="form-group"><label>優先順序</label><select id="m-tpriority"><option value="high" ${t&&t.priority==='high'?'selected':''}>🔴 高</option><option value="mid" ${!t||t.priority==='mid'?'selected':''}>🟡 中</option><option value="low" ${t&&t.priority==='low'?'selected':''}>⚪ 低</option></select></div>
       </div>
       <div class="form-group"><label>完成狀態</label>
         <select id="m-tstatus">
@@ -1066,24 +1077,50 @@ function openModal(type,data_){
   }else if(type==='import'){
     content.innerHTML=`
       <h3>📥 匯入任務時程</h3>
-      <p style="font-size:12px;color:var(--text2);margin-bottom:16px">選擇所屬專案後，貼上任務清單。每行一筆，格式：<br>
-      <code style="background:var(--surface2);padding:2px 6px;border-radius:4px;font-size:11px">任務名稱, YYYY-MM-DD, 優先順序(high/mid/low)</code></p>
       <div class="form-group">
         <label>所屬專案</label>
         <select id="m-import-pid" style="width:100%;padding:8px 11px;border:1px solid var(--border);border-radius:8px;font-size:13px">
           ${data.projects.map(p=>`<option value="${p.id}">${p.name}</option>`).join('')}
         </select>
       </div>
-      <div class="form-group">
-        <label>任務清單（每行一筆）</label>
-        <textarea id="m-import-text" rows="12" placeholder="腳本一版, 2026-06-11, high&#10;腳本一版客戶回覆, 2026-06-15, mid&#10;腳本二版, 2026-06-18, high&#10;錄影, 2026-07-14, high&#10;上片, 2026-07-30, high" style="width:100%;padding:8px 11px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:'DM Mono',monospace;resize:vertical;line-height:1.8"></textarea>
+      <div style="display:flex;gap:8px;margin-bottom:14px">
+        <button id="tab-text" onclick="switchImportTab('text')" style="flex:1;padding:8px;border:1.5px solid #1a1917;border-radius:8px;background:#1a1917;color:#fff;font-size:12px;font-family:'Noto Sans TC',sans-serif;cursor:pointer;font-weight:500">📝 文字輸入</button>
+        <button id="tab-excel" onclick="switchImportTab('excel')" style="flex:1;padding:8px;border:1.5px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text2);font-size:12px;font-family:'Noto Sans TC',sans-serif;cursor:pointer">📊 Excel 匯入</button>
       </div>
-      <div id="import-preview" style="margin-bottom:8px"></div>
+      <div id="import-tab-text">
+        <p style="font-size:12px;color:var(--text2);margin-bottom:8px">每行一筆，支援以下格式：</p>
+        <div style="background:var(--surface2);border-radius:6px;padding:8px 12px;font-size:11px;font-family:'DM Mono',monospace;color:var(--text2);margin-bottom:10px;line-height:1.8">
+          6/11（四）腳本一版<br>
+          6/15 腳本一版客戶回覆<br>
+          2026-06-18 腳本二版<br>
+          7/14（二）or 15（三）錄影
+        </div>
+        <textarea id="m-import-text" rows="10" placeholder="4/20（一）卜大採訪&#10;4/22（三）架構一版&#10;4/24（五）客戶回覆&#10;4/28（二）架構二版&#10;5/05（二）腳本一版&#10;6/04（四）上片" style="width:100%;padding:8px 11px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:'Noto Sans TC',sans-serif;resize:vertical;line-height:2"></textarea>
+      </div>
+      <div id="import-tab-excel" style="display:none">
+        <p style="font-size:12px;color:var(--text2);margin-bottom:8px">支援商周標準 Action Plan Excel 格式（Due 欄位為日期）</p>
+        <div style="border:2px dashed var(--border);border-radius:10px;padding:24px;text-align:center;cursor:pointer;background:var(--surface2)" onclick="document.getElementById('excel-file-input').click()" id="excel-drop-zone">
+          <div style="font-size:24px;margin-bottom:6px">📊</div>
+          <div style="font-size:13px;font-weight:500;color:var(--text)">點擊或拖放 Excel 檔案</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:4px">.xlsx / .xls 格式</div>
+          <input type="file" id="excel-file-input" accept=".xlsx,.xls" style="display:none" onchange="handleExcelFile(this.files[0])">
+        </div>
+        <div id="excel-parse-result" style="margin-top:10px;font-size:12px"></div>
+      </div>
+      <div id="import-preview" style="margin-top:10px;margin-bottom:8px"></div>
       <div class="modal-actions">
         <button class="btn" onclick="closeModal()">取消</button>
         <button class="btn" onclick="previewImport()">預覽</button>
         <button class="btn btn-primary" onclick="confirmImport()">匯入</button>
       </div>`;
+    // drag & drop
+    setTimeout(()=>{
+      const dz=document.getElementById('excel-drop-zone');
+      if(!dz)return;
+      dz.addEventListener('dragover',e=>{e.preventDefault();dz.style.borderColor='var(--blue)';});
+      dz.addEventListener('dragleave',()=>{dz.style.borderColor='var(--border)';});
+      dz.addEventListener('drop',e=>{e.preventDefault();dz.style.borderColor='var(--border)';if(e.dataTransfer.files[0])handleExcelFile(e.dataTransfer.files[0]);});
+    },50);
   }
   overlay.classList.add('open');
 }
@@ -1114,7 +1151,6 @@ function saveTask(id){
   const name=document.getElementById('m-tname').value.trim();
   const pid=document.getElementById('m-tpid').value;
   const date=document.getElementById('m-tdate').value;
-  const priority=document.getElementById('m-tpriority').value;
   const status=document.getElementById('m-tstatus')?document.getElementById('m-tstatus').value:'pending';
   if(!name){alert('請輸入任務名稱');return;}
   const cleanDate=toDateStr(date);
@@ -1122,10 +1158,10 @@ function saveTask(id){
     const t=data.tasks.find(x=>x.id===id);
     if(t){
       if(cleanDate&&cleanDate!==t.date&&!t.originalDate){t.originalDate=t.date;}
-      Object.assign(t,{name,pid,date:cleanDate,priority,status});
+      Object.assign(t,{name,pid,date:cleanDate,status});
     }
   }else{
-    data.tasks.push({id:uid(),pid,name,type:'其他',date:cleanDate,status:'pending',priority});
+    data.tasks.push({id:uid(),pid,name,type:'其他',date:cleanDate,status:'pending',priority:'mid'});
   }
   saveData(data);renderAll();closeModal();
 }
@@ -1136,36 +1172,115 @@ function deleteTask(id){
   saveData(data);renderAll();closeModal();
 }
 
+// 解析「M/D（星期）任務名稱」或「YYYY-MM-DD 任務名稱」格式
+function parseLineDate(line){
+  line=line.trim();
+  if(!line)return null;
+  const year=2026;
+  // 格式：4/20（一）任務名稱 or 4/20(一)任務名稱 or 4/20 任務名稱
+  let m=line.match(/^(\d{1,2})\/(\d{1,2})[\s（\(（][^\s）\)）]*[\s）\)）]?\s*(.+)$/);
+  if(m){
+    const mo=String(parseInt(m[1])).padStart(2,'0');
+    const d=String(parseInt(m[2])).padStart(2,'0');
+    // 處理 or：取第一個日期
+    const name=m[3].replace(/\s*or\s*\d+[（(][^）)]*[）)]/g,'').trim();
+    return{date:`${year}-${mo}-${d}`,name};
+  }
+  // 格式：YYYY-MM-DD 任務名稱
+  m=line.match(/^(\d{4}-\d{2}-\d{2})\s+(.+)$/);
+  if(m)return{date:m[1],name:m[2].trim()};
+  // 格式：任務名稱（無日期，跳過）
+  return null;
+}
+
 function parseImportText(){
   const pid=document.getElementById('m-import-pid').value;
   const text=document.getElementById('m-import-text').value.trim();
   const lines=text.split('\n').filter(l=>l.trim());
   const tasks=[];const errors=[];
   lines.forEach((line,i)=>{
-    const parts=line.split(',').map(s=>s.trim());
-    if(parts.length<2){errors.push(`第${i+1}行格式錯誤：${line}`);return;}
-    const name=parts[0];
-    const date=toDateStr(parts[1]);
-    const priority=parts[2]&&['high','mid','low'].includes(parts[2])?parts[2]:'mid';
-    if(!name||!date){errors.push(`第${i+1}行資料不完整`);return;}
-    tasks.push({id:uid(),pid,name,type:'其他',date,status:'pending',priority});
+    const r=parseLineDate(line);
+    if(!r){errors.push(`第${i+1}行無法解析：${line}`);return;}
+    tasks.push({id:uid(),pid,name:r.name,type:'其他',date:r.date,status:'pending',priority:'mid'});
   });
   return{tasks,errors};
 }
+
+// Excel 日期序號轉 YYYY-MM-DD（Excel epoch 1900-01-01 = 1）
+function excelDateToStr(serial){
+  if(!serial||isNaN(serial))return'';
+  const d=new Date((Number(serial)-25569)*86400*1000);
+  const y=d.getUTCFullYear();const mo=String(d.getUTCMonth()+1).padStart(2,'0');const dd=String(d.getUTCDate()).padStart(2,'0');
+  return`${y}-${mo}-${dd}`;
+}
+
+let _excelParsedTasks=[];
+function handleExcelFile(file){
+  if(!file)return;
+  const el=document.getElementById('excel-parse-result');
+  el.innerHTML='<span style="color:var(--text3)">讀取中…</span>';
+  const reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      const XLSX=window.XLSX;
+      if(!XLSX){el.innerHTML='<span style="color:var(--red)">❌ 請稍候，XLSX 函式庫載入中…</span>';return;}
+      const wb=XLSX.read(e.target.result,{type:'array'});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+      const pid=document.getElementById('m-import-pid').value;
+      const tasks=[];
+      // 找 Due 欄位（第3欄，index 2）和任務名稱（第1欄，index 0）
+      let headerRow=-1;
+      rows.forEach((r,i)=>{if(String(r[0]).includes('Project Content')||String(r[1]).includes('Start'))headerRow=i;});
+      const dataStart=headerRow>=0?headerRow+1:2;
+      rows.slice(dataStart).forEach(r=>{
+        const name=String(r[0]||'').trim();
+        const due=r[2];// Due 欄
+        if(!name||name.startsWith('※')||name.startsWith('*'))return;
+        let dateStr='';
+        if(due&&!isNaN(Number(due)))dateStr=excelDateToStr(Number(due));
+        else if(due&&String(due).includes('-'))dateStr=toDateStr(String(due));
+        else if(due&&String(due).match(/\d{4}\/\d+\/\d+/))dateStr=toDateStr(String(due));
+        if(!name||!dateStr)return;
+        tasks.push({id:uid(),pid,name,type:'其他',date:dateStr,status:'pending',priority:'mid'});
+      });
+      _excelParsedTasks=tasks;
+      if(tasks.length){
+        el.innerHTML=`<div style="background:var(--green-bg);border:1px solid #bbf7d0;border-radius:6px;padding:8px 12px;color:var(--green-text)">✅ 解析成功，共 ${tasks.length} 筆任務<br>${tasks.map(t=>`• ${t.name}（${t.date}）`).join('<br>')}</div>`;
+      }else{
+        el.innerHTML='<span style="color:var(--amber)">⚠️ 未找到有效任務，請確認欄位格式</span>';
+      }
+    }catch(err){el.innerHTML=`<span style="color:var(--red)">❌ 解析失敗：${err.message}</span>`;}
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function switchImportTab(tab){
+  const isText=tab==='text';
+  document.getElementById('import-tab-text').style.display=isText?'block':'none';
+  document.getElementById('import-tab-excel').style.display=isText?'none':'block';
+  document.getElementById('tab-text').style.cssText=`flex:1;padding:8px;border:1.5px solid ${isText?'#1a1917':'var(--border)'};border-radius:8px;background:${isText?'#1a1917':'var(--surface)'};color:${isText?'#fff':'var(--text2)'};font-size:12px;font-family:'Noto Sans TC',sans-serif;cursor:pointer;font-weight:${isText?500:400}`;
+  document.getElementById('tab-excel').style.cssText=`flex:1;padding:8px;border:1.5px solid ${!isText?'#1a1917':'var(--border)'};border-radius:8px;background:${!isText?'#1a1917':'var(--surface)'};color:${!isText?'#fff':'var(--text2)'};font-size:12px;font-family:'Noto Sans TC',sans-serif;cursor:pointer;font-weight:${!isText?500:400}`;
+}
+
 function previewImport(){
-  const{tasks,errors}=parseImportText();
+  const isExcel=document.getElementById('import-tab-excel')&&document.getElementById('import-tab-excel').style.display!=='none';
+  const tasks=isExcel?_excelParsedTasks:parseImportText().tasks;
+  const errors=isExcel?[]:parseImportText().errors;
   const el=document.getElementById('import-preview');
   if(errors.length){
     el.innerHTML=`<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px;font-size:12px;color:#991b1b">${errors.join('<br>')}</div>`;
     return;
   }
+  if(!tasks.length){el.innerHTML='<span style="color:var(--amber);font-size:12px">⚠️ 尚無任務可預覽</span>';return;}
   el.innerHTML=`<div style="background:var(--green-bg);border:1px solid #bbf7d0;border-radius:8px;padding:10px;font-size:12px;color:var(--green-text)">
-    ✅ 預覽正確，將匯入 <strong>${tasks.length}</strong> 筆任務：<br>
-    ${tasks.map(t=>`• ${t.name}（${t.date}）${t.priority==='high'?'🔴':t.priority==='mid'?'🟡':'⚪'}`).join('<br>')}
+    ✅ 將匯入 <strong>${tasks.length}</strong> 筆任務：<br>
+    ${tasks.map(t=>`• ${t.name}（${t.date}）`).join('<br>')}
   </div>`;
 }
 function confirmImport(){
-  const{tasks,errors}=parseImportText();
+  const isExcel=document.getElementById('import-tab-excel')&&document.getElementById('import-tab-excel').style.display!=='none';
+  const{tasks,errors}=isExcel?{tasks:_excelParsedTasks,errors:[]}:parseImportText();
   if(errors.length){previewImport();return;}
   if(!tasks.length){alert('沒有可匯入的任務');return;}
   data.tasks=[...data.tasks,...tasks];
