@@ -131,11 +131,6 @@ button{font-family:'Noto Sans TC',sans-serif;cursor:pointer;font-size:13px}
 .form-group input:focus,.form-group select:focus,.form-group textarea:focus{border-color:var(--text)}
 .form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:20px}
-</style>
-</head>
-<body>
-
-<style>
 #lock-screen{display:flex;position:fixed;inset:0;background:#f7f6f3;z-index:9999;align-items:center;justify-content:center}
 #lock-screen.hidden{display:none!important}
 #app-wrap{display:none}
@@ -1078,7 +1073,6 @@ function openModal(type,data_){
         ${t?`<button class="btn" style="color:var(--red);border-color:var(--red)" onclick="deleteTask('${t.id}')">刪除任務</button>`:''}
         <button class="btn btn-primary" onclick="saveTask('${t?t.id:''}')">${t?'儲存變更':'新增任務'}</button>
       </div>`;
-  }
   }else if(type==='import'){
     content.innerHTML=`
       <h3>📥 匯入任務時程</h3>
