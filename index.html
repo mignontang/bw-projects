@@ -135,7 +135,16 @@ button{font-family:'Noto Sans TC',sans-serif;cursor:pointer;font-size:13px}
 </head>
 <body>
 
-<div id="lock-screen" style="display:none;position:fixed;inset:0;background:#f7f6f3;z-index:9999;display:flex;align-items:center;justify-content:center">
+<style>
+#lock-screen{display:flex;position:fixed;inset:0;background:#f7f6f3;z-index:9999;align-items:center;justify-content:center}
+#lock-screen.hidden{display:none!important}
+#app-wrap{display:none}
+#app-wrap.visible{display:block}
+</style>
+</head>
+<body>
+
+<div id="lock-screen">
   <div style="background:#fff;border:1px solid #e2e0d8;border-radius:16px;padding:40px 48px;width:340px;text-align:center;box-shadow:0 4px 24px rgba(0,0,0,0.08)">
     <div style="font-size:32px;margin-bottom:16px">🔐</div>
     <h2 style="font-size:18px;font-weight:600;color:#1a1917;margin-bottom:6px">BW 專案管理系統</h2>
@@ -147,7 +156,7 @@ button{font-family:'Noto Sans TC',sans-serif;cursor:pointer;font-size:13px}
   </div>
 </div>
 
-<div id="app-wrap" style="display:none">
+<div id="app-wrap">
 <div class="app">
 <aside class="sidebar">
   <div class="sidebar-logo">
@@ -1197,8 +1206,8 @@ function checkPw(){
   const val=document.getElementById('pw-input').value;
   if(val==='mignon'){
     localStorage.setItem('bw_auth','1');
-    document.getElementById('lock-screen').style.display='none';
-    document.getElementById('app-wrap').style.display='block';
+    document.getElementById('lock-screen').classList.add('hidden');
+    document.getElementById('app-wrap').classList.add('visible');
     renderAll();
     loadFromCloud().then(ok=>{if(ok)renderAll();});
   }else{
@@ -1209,13 +1218,13 @@ function checkPw(){
 }
 function initAuth(){
   if(localStorage.getItem('bw_auth')==='1'){
-    document.getElementById('lock-screen').style.display='none';
-    document.getElementById('app-wrap').style.display='block';
+    document.getElementById('lock-screen').classList.add('hidden');
+    document.getElementById('app-wrap').classList.add('visible');
     renderAll();
     loadFromCloud().then(ok=>{if(ok)renderAll();});
   }else{
-    document.getElementById('lock-screen').style.display='flex';
-    document.getElementById('app-wrap').style.display='none';
+    // lock-screen 預設已顯示，只需確保 app-wrap 隱藏
+    document.getElementById('app-wrap').classList.remove('visible');
     setTimeout(()=>document.getElementById('pw-input').focus(),100);
   }
 }
