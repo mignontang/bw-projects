@@ -241,7 +241,7 @@ button{font-family:'Noto Sans TC',sans-serif;cursor:pointer;font-size:13px}
 </div>
 
 <script>
-const API_URL='https://script.google.com/macros/s/AKfycbyOs4q-_TK7WvpoDSYYzQsYIewlhoRh7vMMIjnzaJCfknXeljOA9MYnoaFBH0uGqRr2NA/exec';
+const API_URL='https://script.google.com/macros/s/AKfycbyXaFplGQITuevr92adnjhYcqd11bRsXkpooBN4fRt2LfNgWpUV3fw103dlS551TQnhcQ/exec';
 const SHEET_ID='10AWepUMaLek8MJvoBmp5v7jALbyYkzRYQ-Wu1BSuXfo';
 let isSyncing=false;
 
@@ -336,13 +336,32 @@ function saveLocalCache(d){
   try{localStorage.setItem('bw_pm_v1',JSON.stringify(d));}catch(e){}
 }
 
-// ── 雲端儲存：fetch GET 讀取 + fetch no-cors 寫入 ──────────
+// ── 雲端儲存（JSONP，繞過 CORS）──────────────────────────
+function jsonpRequest(url, timeoutMs){
+  return new Promise((resolve,reject)=>{
+    const cbName='_bwcb_'+Date.now()+'_'+Math.random().toString(36).slice(2);
+    const script=document.createElement('script');
+    const timer=setTimeout(()=>{
+      cleanup();reject(new Error('timeout'));
+    }, timeoutMs||15000);
+    function cleanup(){
+      clearTimeout(timer);
+      try{delete window[cbName];}catch(e){}
+      if(script.parentNode)script.parentNode.removeChild(script);
+    }
+    window[cbName]=function(result){cleanup();resolve(result);};
+    // 強制加 callback 參數
+    const sep=url.includes('?')?'&':'?';
+    script.src=url+sep+'callback='+cbName+'&t='+Date.now();
+    script.onerror=function(e){cleanup();reject(new Error('script load error'));};
+    document.head.appendChild(script);
+  });
+}
+
 async function loadFromCloud(){
   showSyncStatus('loading');
   try{
-    const r=await fetch(API_URL+'?action=getData',{redirect:'follow'});
-    const text=await r.text();
-    const json=JSON.parse(text.trim());
+    const json=await jsonpRequest(API_URL+'?action=getData');
     if(json&&json.projects&&json.projects.length>0){
       data.projects=json.projects;
       data.tasks=json.tasks||[];
@@ -352,6 +371,7 @@ async function loadFromCloud(){
       showSyncStatus('ok');
       return true;
     }else{
+      // 雲端空的，推本地資料上去
       await saveToCloud(data);
       showSyncStatus('ok');
       return true;
@@ -387,13 +407,8 @@ async function saveData(d){
 
 async function saveToCloud(d){
   const clean=sanitizeDates(JSON.parse(JSON.stringify(d)));
-  const body=JSON.stringify({action:'saveData',data:clean});
-  await fetch(API_URL,{
-    method:'POST',
-    mode:'no-cors',
-    headers:{'Content-Type':'text/plain'},
-    body:body
-  });
+  const encoded=encodeURIComponent(JSON.stringify({action:'saveData',data:clean}));
+  await jsonpRequest(API_URL+'?method=post&body='+encoded, 25000);
 }
 
 function showSyncStatus(state){
