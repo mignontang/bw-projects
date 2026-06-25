@@ -407,19 +407,29 @@ async function saveData(d){
 
 async function saveToCloud(d){
   const clean=sanitizeDates(JSON.parse(JSON.stringify(d)));
-  const body=JSON.stringify({action:'saveData',data:clean});
-  // 用 FormData POST，繞過 CORS（no-cors 模式寫入）
-  const form=new FormData();
-  form.append('data',body);
+  // 分批寫入：先存 projects，再存 tasks
+  // 用 JSONP GET 方式，繞過 CORS
+  const pEncoded=encodeURIComponent(JSON.stringify({action:'saveData',data:{projects:clean.projects,tasks:[]}}));
+  const tEncoded=encodeURIComponent(JSON.stringify({action:'saveData',data:clean}));
+  // 資料量小用 JSONP，大的用 image beacon（fire-and-forget）
   try{
-    await fetch(API_URL,{method:'POST',mode:'no-cors',body:form});
-  }catch(e){
-    // no-cors 不會有回傳，失敗時 fallback 到 JSONP GET 分批
-    console.warn('FormData failed, trying JSONP:',e.message);
-    const encoded=encodeURIComponent(body);
-    if(encoded.length<7000){
-      await jsonpRequest(API_URL+'?method=post&body='+encoded,25000);
+    if(tEncoded.length<8000){
+      await jsonpRequest(API_URL+'?method=post&body='+tEncoded,25000);
+    }else{
+      // 分兩批：先存 projects
+      await jsonpRequest(API_URL+'?method=post&body='+pEncoded,15000);
+      // 再存全部（覆寫）
+      // 把 tasks 分批，每批 20 筆
+      const batchSize=20;
+      for(let i=0;i<clean.tasks.length;i+=batchSize){
+        const batch=clean.tasks.slice(0,i+batchSize);// 累積存
+        const bEncoded=encodeURIComponent(JSON.stringify({action:'saveData',data:{projects:clean.projects,tasks:batch}}));
+        await jsonpRequest(API_URL+'?method=post&body='+bEncoded,20000);
+      }
     }
+  }catch(e){
+    console.warn('saveToCloud error:',e.message);
+    throw e;
   }
 }
 
