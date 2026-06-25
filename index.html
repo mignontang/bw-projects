@@ -1042,9 +1042,34 @@ function renderAll(){
   renderTasks();
 }
 async function manualSync(){
+  showSyncStatus('saving');
+  // 先把本地推上去，再拉回合併，避免覆蓋本地新資料
+  try{await saveToCloud(data);}catch(e){console.warn('Pre-sync push failed:',e.message);}
   showSyncStatus('loading');
-  const ok=await loadFromCloud();
-  if(ok)renderAll();
+  try{
+    const json=await jsonpRequest(API_URL+'?action=getData');
+    if(json&&json.projects&&json.projects.length>0){
+      // 合併：雲端資料 + 本地獨有的新增項目
+      const cloudPIds=new Set(json.projects.map(p=>p.id));
+      const cloudTIds=new Set(json.tasks.map(t=>t.id));
+      const localNewP=data.projects.filter(p=>!cloudPIds.has(p.id));
+      const localNewT=data.tasks.filter(t=>!cloudTIds.has(t.id));
+      data.projects=[...json.projects,...localNewP];
+      data.tasks=[...json.tasks,...localNewT];
+      sanitizeDates(data);
+      data.projects=data.projects.map(p=>({...p,stage:p.stage==='前置規劃'?'執行中':p.stage}));
+      saveLocalCache(data);
+      if(localNewP.length||localNewT.length){
+        // 有新增資料，推回雲端
+        await saveToCloud(data);
+      }
+      showSyncStatus('ok');
+      renderAll();
+    }
+  }catch(e){
+    console.warn('Sync failed:',e.message);
+    showSyncStatus('offline');
+  }
 }
 
 function showView(view){
