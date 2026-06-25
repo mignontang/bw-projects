@@ -410,27 +410,42 @@ async function saveData(d){
 
 async function saveToCloud(d){
   const clean=sanitizeDates(JSON.parse(JSON.stringify(d)));
-  // 用 GET + JSONP 寫入，完全繞過 CORS 限制
-  // 資料太大時分兩步：先存 projects，再累積存 tasks
-  const fullEncoded=encodeURIComponent(JSON.stringify(clean));
-  try{
-    if(fullEncoded.length<7500){
-      // 資料夠小，一次存完
-      await jsonpRequest(API_URL+'?action=saveData&body='+fullEncoded,20000);
-    }else{
-      // 分批：先存 projects + 前半 tasks
-      const half=Math.ceil(clean.tasks.length/2);
-      const first={projects:clean.projects,tasks:clean.tasks.slice(0,half)};
-      const second={projects:clean.projects,tasks:clean.tasks};
-      const e1=encodeURIComponent(JSON.stringify(first));
-      const e2=encodeURIComponent(JSON.stringify(second));
-      await jsonpRequest(API_URL+'?action=saveData&body='+e1,20000);
-      await jsonpRequest(API_URL+'?action=saveData&body='+e2,20000);
+  const body=JSON.stringify({action:'saveData',data:clean});
+  return new Promise((resolve,reject)=>{
+    // 建立隱藏 iframe 接收回應
+    const iframeId='_save_iframe_'+Date.now();
+    const iframe=document.createElement('iframe');
+    iframe.name=iframeId;
+    iframe.style.display='none';
+    document.body.appendChild(iframe);
+    // 建立隱藏 form，target 指向 iframe
+    const form=document.createElement('form');
+    form.method='POST';
+    form.action=API_URL;
+    form.target=iframeId;
+    form.style.display='none';
+    const input=document.createElement('input');
+    input.type='hidden';
+    input.name='payload';
+    input.value=body;
+    form.appendChild(input);
+    document.body.appendChild(form);
+    const timer=setTimeout(()=>{
+      cleanup();
+      // form POST 不管有沒有回應都當成成功（fire-and-forget）
+      resolve();
+    },5000);
+    iframe.onload=function(){
+      cleanup();
+      resolve();
+    };
+    function cleanup(){
+      clearTimeout(timer);
+      try{document.body.removeChild(iframe);}catch(e){}
+      try{document.body.removeChild(form);}catch(e){}
     }
-  }catch(e){
-    console.warn('saveToCloud error:',e.message);
-    throw e;
-  }
+    form.submit();
+  });
 }
 
 function showSyncStatus(state){
