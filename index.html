@@ -884,11 +884,18 @@ function renderTasks(){
   tasks.sort((a,b)=>new Date(a.date)-new Date(b.date));
 
   const sel=document.getElementById('task-filter-project');
-  if(sel.options.length<=1){
+  if(sel){
+    // 每次都重建選單確保包含最新專案
+    const currentVal=sel.value;
+    sel.innerHTML='<option value="">全部專案</option>';
     data.projects.forEach(p=>{
-      const o=document.createElement('option');o.value=p.id;o.textContent=p.name;sel.appendChild(o);
+      const o=document.createElement('option');
+      o.value=p.id;o.textContent=p.name;sel.appendChild(o);
     });
-    sel.value=filterPid;
+    // 恢復之前選取的值（如果還存在）
+    if(currentVal&&data.projects.find(p=>p.id===currentVal)){
+      sel.value=currentVal;
+    }
   }
 
   if(!tasks.length){document.getElementById('tasks-table').innerHTML='<div class="empty">沒有符合條件的任務</div>';return;}
@@ -1302,16 +1309,14 @@ function viewProjectTasks(pid){
   setTimeout(()=>{
     const sel=document.getElementById('task-filter-project');
     if(sel){
-      // 確保選項已載入
-      if(sel.options.length<=1){
-        data.projects.forEach(p=>{
-          const o=document.createElement('option');
-          o.value=p.id;o.textContent=p.name;sel.appendChild(o);
-        });
-      }
+      // 重建選單
+      sel.innerHTML='<option value="">全部專案</option>';
+      data.projects.forEach(p=>{
+        const o=document.createElement('option');
+        o.value=p.id;o.textContent=p.name;sel.appendChild(o);
+      });
       sel.value=pid;
       renderTasks();
-      // 捲到頁面頂部
       document.querySelector('.content').scrollTop=0;
     }
   },50);
