@@ -410,15 +410,22 @@ async function saveData(d){
 
 async function saveToCloud(d){
   const clean=sanitizeDates(JSON.parse(JSON.stringify(d)));
+  // 安全檢查：確保資料完整才送出
+  if(!clean.projects||clean.projects.length===0){
+    console.warn('saveToCloud: projects empty, skip');
+    return;
+  }
+  if(!clean.tasks||clean.tasks.length===0){
+    console.warn('saveToCloud: tasks empty, skip');
+    return;
+  }
   const body=JSON.stringify({action:'saveData',data:clean});
-  return new Promise((resolve,reject)=>{
-    // 建立隱藏 iframe 接收回應
-    const iframeId='_save_iframe_'+Date.now();
+  return new Promise((resolve)=>{
+    const iframeId='_save_'+Date.now();
     const iframe=document.createElement('iframe');
     iframe.name=iframeId;
-    iframe.style.display='none';
+    iframe.style.cssText='display:none;position:fixed;width:0;height:0';
     document.body.appendChild(iframe);
-    // 建立隱藏 form，target 指向 iframe
     const form=document.createElement('form');
     form.method='POST';
     form.action=API_URL;
@@ -430,21 +437,15 @@ async function saveToCloud(d){
     input.value=body;
     form.appendChild(input);
     document.body.appendChild(form);
-    const timer=setTimeout(()=>{
-      cleanup();
-      // form POST 不管有沒有回應都當成成功（fire-and-forget）
-      resolve();
-    },5000);
-    iframe.onload=function(){
-      cleanup();
-      resolve();
-    };
     function cleanup(){
-      clearTimeout(timer);
       try{document.body.removeChild(iframe);}catch(e){}
       try{document.body.removeChild(form);}catch(e){}
     }
+    // 5秒後視為成功（fire-and-forget，Apps Script 有安全保護）
+    setTimeout(()=>{cleanup();resolve();},5000);
+    iframe.onload=function(){cleanup();resolve();};
     form.submit();
+    console.log('saveToCloud: sending',clean.projects.length,'projects,',clean.tasks.length,'tasks');
   });
 }
 
