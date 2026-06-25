@@ -407,8 +407,20 @@ async function saveData(d){
 
 async function saveToCloud(d){
   const clean=sanitizeDates(JSON.parse(JSON.stringify(d)));
-  const encoded=encodeURIComponent(JSON.stringify({action:'saveData',data:clean}));
-  await jsonpRequest(API_URL+'?method=post&body='+encoded, 25000);
+  const body=JSON.stringify({action:'saveData',data:clean});
+  // 用 FormData POST，繞過 CORS（no-cors 模式寫入）
+  const form=new FormData();
+  form.append('data',body);
+  try{
+    await fetch(API_URL,{method:'POST',mode:'no-cors',body:form});
+  }catch(e){
+    // no-cors 不會有回傳，失敗時 fallback 到 JSONP GET 分批
+    console.warn('FormData failed, trying JSONP:',e.message);
+    const encoded=encodeURIComponent(body);
+    if(encoded.length<7000){
+      await jsonpRequest(API_URL+'?method=post&body='+encoded,25000);
+    }
+  }
 }
 
 function showSyncStatus(state){
